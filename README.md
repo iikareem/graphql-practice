@@ -23,7 +23,7 @@ No real database required — the in-memory layer mirrors relational ideas (PKs,
 ## Quick start
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/iikareem/graphql-practice.git
 cd graphql-practice
 npm install
 npm run server
