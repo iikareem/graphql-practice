@@ -1,0 +1,13 @@
+{
+  "name": "graphql-practice",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Step-by-step GraphQL lab (Apollo Server + Client)",
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "server": "npm run dev -w server"
+  }
+}

@@ -1,0 +1,40 @@
+# Slice 3 — Nested relations (graph, not REST)
+# authorId stays in the DB only; GraphQL exposes author: User!
+
+type User {
+  id: ID!
+  name: String!
+  email: String!
+  """Posts written by this user — resolved via authorId FK."""
+  posts: [Post!]!
+}
+
+type Post {
+  id: ID!
+  title: String!
+  body: String!
+  published: Boolean!
+  tags: [String!]!
+  createdAt: String!
+  """Nested resolver: parent.authorId → db.findUserById"""
+  author: User!
+  comments: [Comment!]!
+}
+
+type Comment {
+  id: ID!
+  text: String!
+  author: User!
+  post: Post!
+}
+
+type Query {
+  hello: String!
+
+  users: [User!]!
+  user(id: ID!): User
+
+  """Optional filter: posts(published: true)"""
+  posts(published: Boolean): [Post!]!
+  post(id: ID!): Post
+}
