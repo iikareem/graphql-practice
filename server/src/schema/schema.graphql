@@ -1,5 +1,5 @@
-# Slice 3 — Nested relations (graph, not REST)
-# authorId stays in the DB only; GraphQL exposes author: User!
+# Slice 4 — Mutations + Input types
+# Queries read. Mutations change. Never reuse object types as mutation args — use input.
 
 type User {
   id: ID!
@@ -28,6 +28,26 @@ type Comment {
   post: Post!
 }
 
+"""
+INPUT types: write-side payloads.
+Defaults apply when the client omits the field.
+authorId is temporary until Slice 6 (context / auth).
+"""
+input CreatePostInput {
+  title: String!
+  body: String!
+  authorId: ID!
+  tags: [String!] = []
+  published: Boolean = false
+}
+
+input UpdatePostInput {
+  title: String
+  body: String
+  tags: [String!]
+  published: Boolean
+}
+
 type Query {
   hello: String!
 
@@ -37,4 +57,11 @@ type Query {
   """Optional filter: posts(published: true)"""
   posts(published: Boolean): [Post!]!
   post(id: ID!): Post
+}
+
+type Mutation {
+  createPost(input: CreatePostInput!): Post!
+  updatePost(id: ID!, input: UpdatePostInput!): Post!
+  deletePost(id: ID!): Boolean!
+  addComment(postId: ID!, text: String!, authorId: ID!): Comment!
 }

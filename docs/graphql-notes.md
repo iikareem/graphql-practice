@@ -112,6 +112,53 @@ So:
 
 ---
 
+## `posts` vs `Post` — two different resolvers
+
+They look similar but are **not** the same thing:
+
+| In code | In schema | Job |
+|---------|-----------|-----|
+| `Query.posts` | Root field `posts` | **Get the list** (runs once) |
+| `Post.author`, `Post.comments`, … | Fields on type `Post` | **Enrich each item** (runs per post, if selected) |
+
+```ts
+Query: {
+  posts: (_, args) => db.findPosts(...)  // parent / entry — returns post rows
+},
+
+Post: {
+  author: (parent) => db.findUserById(parent.authorId),  // per post
+  comments: (parent) => db.findCommentsByPostId(parent.id),
+},
+```
+
+`posts` = fetch many posts.  
+`Post` = for one post object, how do its fields resolve?
+
+---
+
+## Execution order: parent first, then each type’s fields
+
+GraphQL walks the query **top → down**:
+
+1. Run the **parent / root** resolver first (e.g. `Query.posts`) → get objects.
+2. For **each** returned object, run resolvers for the **selected fields on that type**.
+3. If a field returns another object (`author` → `User`), repeat for that type’s selected fields.
+
+```text
+Query.posts  →  [post1, post2, post3]          // once
+     ↓
+For each post:
+  Post.title    → parent.title                 // default
+  Post.author   → findUserById(authorId)       // custom
+       ↓
+  User.name     → parent.name                   // default
+```
+
+Only fields you asked for. Only types that appear in the result.
+
+---
+
 ## Relations (“joins”) = nested field resolvers
 
 ```graphql
@@ -140,6 +187,7 @@ Important:
 - Runs **per parent post**, not “once per unique author” (unless DataLoader caches).
 - First argument is **`parent`** (the post), not usually a GraphQL arg like `postId`.
 - Signature: `(parent, args, context, info)` — relation uses `parent.authorId`.
+- N posts + `author` selected → `Post.author` runs **N times** (same for `comments`).
 
 This is GraphQL’s join model. Without batching → **N+1** (later: DataLoader).
 
@@ -208,6 +256,53 @@ Example:
   }
 }
 ```
+
+---
+
+## Mutations vs queries + Input types (Slice 4)
+
+| | Query | Mutation |
+|--|--------|----------|
+| Intent | read | write (create / update / delete) |
+| Root type | `type Query` | `type Mutation` |
+| Client keyword | `query { ... }` (or shorthand `{ ... }`) | `mutation { ... }` |
+
+**Input types** — never pass a full `Post` object into a mutation. Use `input`:
+
+```graphql
+input CreatePostInput {
+  title: String!
+  body: String!
+  authorId: ID!
+  tags: [String!] = []
+  published: Boolean = false
+}
+
+type Mutation {
+  createPost(input: CreatePostInput!): Post!
+}
+```
+
+Why `input`:
+- Clear write payload (optional vs required fields differ from the output type)
+- Can reuse one input across mutations
+- Defaults (`= []`, `= false`) live on the input
+
+After a mutation, select fields on the return type (including nested resolvers):
+
+```graphql
+mutation {
+  createPost(input: { title: "Hi", body: "...", authorId: "1" }) {
+    id
+    title
+    author { name }
+  }
+}
+```
+
+Flow: `Mutation.createPost` → `db.insertPost` → return row → `Post.author` runs if selected.
+
+`authorId` in the input is temporary; Slice 6 moves “who am I” into context.
 
 ---
 

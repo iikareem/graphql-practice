@@ -62,7 +62,7 @@ graphql-practice/
 | 1 | Done | Hello world, schema vs resolvers, Sandbox |
 | 2 | Done | Object types, args, in-memory DB, look-ahead on `users` |
 | 3 | Done | Nested resolvers (`author`, `comments`, `User.posts`) / N+1 visible in logs |
-| 4 | Planned | Mutations + Input types |
+| 4 | Done | Mutations + Input types (`createPost`, `updatePost`, `deletePost`, `addComment`) |
 | 5 | Planned | Enums, interfaces, unions |
 | 6 | Planned | Context + simple auth (`x-user-id`) |
 | 7 | Planned | `GraphQLError` + extensions |
@@ -122,6 +122,53 @@ query {
   }
 }
 ```
+
+**Mutations (Slice 4)** — in Sandbox switch operation to Mutation, or use `mutation { ... }`:
+
+```graphql
+mutation CreatePost {
+  createPost(
+    input: {
+      title: "My first mutation"
+      body: "Writes go through db.insertPost"
+      authorId: "1"
+      tags: ["graphql"]
+      published: true
+    }
+  ) {
+    id
+    title
+    published
+    author {
+      name
+    }
+  }
+}
+
+mutation AddComment {
+  addComment(postId: "1", text: "Nice post!", authorId: "3") {
+    id
+    text
+    author {
+      name
+    }
+  }
+}
+
+mutation UpdatePost {
+  updatePost(id: "5", input: { published: false }) {
+    id
+    title
+    published
+  }
+}
+
+mutation DeletePost {
+  deletePost(id: "5")
+}
+```
+
+Note: `authorId` on create/comment is temporary until Slice 6 (auth context).
 
 ---
 

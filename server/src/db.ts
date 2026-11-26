@@ -1,7 +1,7 @@
 /**
  * In-memory DB (tables + repo helpers)
  *
- * Slice 3: comments table + find-by-FK helpers for nested resolvers.
+ * Slice 4: insert / update / delete — same tables queries read.
  */
 
 export type UserRow = {
@@ -78,6 +78,9 @@ const comments: CommentRow[] = [
   { id: "3", text: "Apollo Client cache tips?", postId: "2", authorId: "1" },
 ];
 
+let nextPostId = 5;
+let nextCommentId = 4;
+
 const USER_COLUMNS = ["id", "name", "email"] as const;
 type UserColumn = (typeof USER_COLUMNS)[number];
 
@@ -86,9 +89,6 @@ export const db = {
     return [...users];
   },
 
-  /**
-   * Look-ahead: project only requested scalar columns (draft of SELECT list).
-   */
   findUsersSelect(columns: string[]): Partial<UserRow>[] {
     const allowed = new Set<string>(USER_COLUMNS);
     const cols = columns.filter((c): c is UserColumn => allowed.has(c));
@@ -127,5 +127,75 @@ export const db = {
   findCommentsByPostId(postId: string): CommentRow[] {
     console.log(`[db] findCommentsByPostId(${postId})`);
     return comments.filter((c) => c.postId === postId);
+  },
+
+  insertPost(data: {
+    title: string;
+    body: string;
+    authorId: string;
+    tags: string[];
+    published: boolean;
+  }): PostRow {
+    const row: PostRow = {
+      id: String(nextPostId++),
+      title: data.title,
+      body: data.body,
+      authorId: data.authorId,
+      tags: [...data.tags],
+      published: data.published,
+      createdAt: new Date().toISOString(),
+    };
+    posts.push(row);
+    console.log(`[db] insertPost id=${row.id}`);
+    return row;
+  },
+
+  updatePost(
+    id: string,
+    patch: {
+      title?: string;
+      body?: string;
+      tags?: string[];
+      published?: boolean;
+    }
+  ): PostRow | null {
+    const row = posts.find((p) => p.id === id);
+    if (!row) return null;
+    if (patch.title !== undefined) row.title = patch.title;
+    if (patch.body !== undefined) row.body = patch.body;
+    if (patch.tags !== undefined) row.tags = [...patch.tags];
+    if (patch.published !== undefined) row.published = patch.published;
+    console.log(`[db] updatePost id=${id}`);
+    return row;
+  },
+
+  deletePost(id: string): boolean {
+    const index = posts.findIndex((p) => p.id === id);
+    if (index === -1) return false;
+    posts.splice(index, 1);
+    // cascade comments for this post (simple in-memory FK cleanup)
+    for (let i = comments.length - 1; i >= 0; i--) {
+      if (comments[i]?.postId === id) comments.splice(i, 1);
+    }
+    console.log(`[db] deletePost id=${id}`);
+    return true;
+  },
+
+  insertComment(data: {
+    postId: string;
+    text: string;
+    authorId: string;
+  }): CommentRow | null {
+    if (!posts.some((p) => p.id === data.postId)) return null;
+    if (!users.some((u) => u.id === data.authorId)) return null;
+    const row: CommentRow = {
+      id: String(nextCommentId++),
+      text: data.text,
+      postId: data.postId,
+      authorId: data.authorId,
+    };
+    comments.push(row);
+    console.log(`[db] insertComment id=${row.id}`);
+    return row;
   },
 };
