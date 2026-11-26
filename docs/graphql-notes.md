@@ -112,6 +112,31 @@ So:
 
 ---
 
+## Resolver keys must match the schema (by name)
+
+GraphQL finds resolvers by **exact name**:
+
+| Schema | Resolver key |
+|--------|----------------|
+| `type Query` + field `posts` | `Query.posts` |
+| `type Post` | `Post: { ... }` |
+| field `author` on `Post` | `Post.author` |
+
+If the name is wrong (`Posts`, `Authors`), GraphQL won’t use your function — it falls back to the default resolver.
+
+The same `Post` map is reused everywhere a `Post` is returned: `Query.posts`, `Query.post`, `createPost`, nested fields, etc.
+
+```graphql
+createPost(...): Post!   # return type name → uses Post resolvers
+```
+
+```ts
+Mutation.createPost → returns PostRow
+  → client selects author → Post.author(parent)
+```
+
+---
+
 ## `posts` vs `Post` — two different resolvers
 
 They look similar but are **not** the same thing:
@@ -134,6 +159,8 @@ Post: {
 
 `posts` = fetch many posts.  
 `Post` = for one post object, how do its fields resolve?
+
+**Execution:** run `posts` once → for **each** item, run selected fields under `Post`.
 
 ---
 
