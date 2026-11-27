@@ -1,12 +1,18 @@
 /**
- * Slice 4 — Mutations + Input types
+ * Slice 5 — Enums, Interface, Union
  *
- * Mutation resolvers receive `args.input` (or discrete args) and write via db.*.
- * Return the new/updated row so the client can select nested fields in the same request:
- *   mutation { createPost(input: {...}) { id title author { name } } }
+ * - Role enum: default resolver reads parent.role (must match enum values)
+ * - Node / SearchResult: __resolveType tells GraphQL which concrete type
+ * - Inline fragments (... on Post) only work after resolveType succeeds
  */
 import type { GraphQLResolveInfo } from "graphql";
-import { db, type CommentRow, type PostRow, type UserRow } from "./db.js";
+import {
+  db,
+  type CommentRow,
+  type PostRow,
+  type ProductRow,
+  type UserRow,
+} from "./db.js";
 import { selectedFieldNames } from "./fieldSelection.js";
 
 type CreatePostInput = {
@@ -24,9 +30,11 @@ type UpdatePostInput = {
   published?: boolean | null;
 };
 
+type WithTypename<T extends string> = { __typename?: T };
+
 export const resolvers = {
   Query: {
-    hello: (): string => "Hello GraphQL — Slice 4 (mutations)",
+    hello: (): string => "Hello GraphQL — Slice 5 (enum / interface / union)",
 
     users: (
       _parent: unknown,
@@ -50,6 +58,15 @@ export const resolvers = {
       ),
 
     post: (_: unknown, args: { id: string }) => db.findPostById(args.id),
+
+    products: () => db.findProducts(),
+
+    product: (_: unknown, args: { id: string }) =>
+      db.findProductById(args.id),
+
+    node: (_: unknown, args: { id: string }) => db.findNode(args.id),
+
+    search: (_: unknown, args: { term: string }) => db.search(args.term),
   },
 
   Mutation: {
@@ -104,6 +121,39 @@ export const resolvers = {
         throw new Error("Post or author not found");
       }
       return row;
+    },
+  },
+
+  /**
+   * Interface Node — GraphQL asks: which concrete type is this object?
+   * Prefer __typename we attached in db.findNode; fall back to shape checks.
+   */
+  Node: {
+    __resolveType(
+      obj: WithTypename<"User" | "Post" | "Product"> &
+        Partial<UserRow & PostRow & ProductRow>
+    ): "User" | "Post" | "Product" | null {
+      if (obj.__typename) return obj.__typename;
+      if ("email" in obj && obj.email !== undefined) return "User";
+      if ("price" in obj && obj.price !== undefined) return "Product";
+      if ("title" in obj && obj.title !== undefined) return "Post";
+      return null;
+    },
+  },
+
+  /**
+   * Union SearchResult — same idea: pick Post vs Product for each hit.
+   */
+  SearchResult: {
+    __resolveType(
+      obj: WithTypename<"Post" | "Product"> & Partial<PostRow & ProductRow>
+    ): "Post" | "Product" | null {
+      if (obj.__typename === "Post" || obj.__typename === "Product") {
+        return obj.__typename;
+      }
+      if ("price" in obj && obj.price !== undefined) return "Product";
+      if ("title" in obj && obj.title !== undefined) return "Post";
+      return null;
     },
   },
 

@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import gql from "graphql-tag";
+import { gql } from "graphql-tag";
 
 const here = dirname(fileURLToPath(import.meta.url));
 

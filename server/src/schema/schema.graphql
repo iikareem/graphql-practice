@@ -1,15 +1,30 @@
-# Slice 4 — Mutations + Input types
-# Queries read. Mutations change. Never reuse object types as mutation args — use input.
+# Slice 5 — Enums, Interface, Union
+# Enum = fixed allowed values. Interface = shared fields. Union = one-of types (use ... on Type).
 
-type User {
+"""Fixed set of roles — client can only send / receive these values."""
+enum Role {
+  USER
+  ADMIN
+}
+
+"""
+Shared contract: any type that implements Node must have id.
+Query.node returns Node — client uses inline fragments (... on User).
+"""
+interface Node {
+  id: ID!
+}
+
+type User implements Node {
   id: ID!
   name: String!
   email: String!
+  role: Role!
   """Posts written by this user — resolved via authorId FK."""
   posts: [Post!]!
 }
 
-type Post {
+type Post implements Node {
   id: ID!
   title: String!
   body: String!
@@ -27,6 +42,21 @@ type Comment {
   author: User!
   post: Post!
 }
+
+"""Another Node implementor — used with Post in SearchResult union."""
+type Product implements Node {
+  id: ID!
+  name: String!
+  description: String!
+  price: Float!
+  tags: [String!]!
+}
+
+"""
+Union = one-of (no shared fields required).
+Client must use inline fragments: ... on Post { title } ... on Product { price }
+"""
+union SearchResult = Post | Product
 
 """
 INPUT types: write-side payloads.
@@ -57,6 +87,18 @@ type Query {
   """Optional filter: posts(published: true)"""
   posts(published: Boolean): [Post!]!
   post(id: ID!): Post
+
+  products: [Product!]!
+  product(id: ID!): Product
+
+  """
+  Polymorphic lookup. Pass a global id: "User:1", "Post:2", or "Product:1"
+  (local table ids collide — Node needs a type prefix).
+  """
+  node(id: ID!): Node
+
+  """Search posts + products by term; returns a mix — use inline fragments."""
+  search(term: String!): [SearchResult!]!
 }
 
 type Mutation {

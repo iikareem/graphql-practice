@@ -1,13 +1,16 @@
 /**
  * In-memory DB (tables + repo helpers)
  *
- * Slice 4: insert / update / delete — same tables queries read.
+ * Slice 5: Role enum on users + products table + search / node helpers.
  */
+
+export type Role = "USER" | "ADMIN";
 
 export type UserRow = {
     id: string;
     name: string;
-    email: string,
+    email: string;
+    role: Role;
     password?: string;
 };
 
@@ -28,10 +31,42 @@ export type CommentRow = {
     authorId: string; // FK → users.id
 };
 
+export type ProductRow = {
+    id: string;
+    name: string;
+    description: string;
+    price: number;
+    tags: string[];
+};
+
 const users: UserRow[] = [
-    {id: "1", name: "Kareem", email: "kareem@example.com", password: "false"},
-    {id: "2", name: "Sara", email: "sara@example.com"},
-    {id: "3", name: "Omar", email: "omar@example.com"},
+    {id: "1", name: "Kareem", email: "kareem@example.com", role: "ADMIN", password: "false"},
+    {id: "2", name: "Sara", email: "sara@example.com", role: "USER"},
+    {id: "3", name: "Omar", email: "omar@example.com", role: "USER"},
+];
+
+const products: ProductRow[] = [
+    {
+        id: "1",
+        name: "GraphQL Stickers",
+        description: "Schema-first sticker pack",
+        price: 9.99,
+        tags: ["graphql", "merch"],
+    },
+    {
+        id: "2",
+        name: "Apollo Hoodie",
+        description: "Warm debugging companion",
+        price: 49.0,
+        tags: ["apollo", "merch"],
+    },
+    {
+        id: "3",
+        name: "Relay Notebook",
+        description: "Cursor pagination doodles",
+        price: 14.5,
+        tags: ["relay", "notes"],
+    },
 ];
 
 const posts: PostRow[] = [
@@ -82,8 +117,26 @@ const comments: CommentRow[] = [
 let nextPostId = 5;
 let nextCommentId = 4;
 
-const USER_COLUMNS = ["id", "name", "email"] as const;
+const USER_COLUMNS = ["id", "name", "email", "role"] as const;
 type UserColumn = (typeof USER_COLUMNS)[number];
+
+export type NodeKind = "User" | "Post" | "Product";
+
+/** Global id for interface Node — local ids collide across tables. */
+export function toGlobalId(kind: NodeKind, id: string): string {
+    return `${kind}:${id}`;
+}
+
+export function parseGlobalId(
+    globalId: string
+): { kind: NodeKind; id: string } | null {
+    const [kind, ...rest] = globalId.split(":");
+    const id = rest.join(":");
+    if (!id || (kind !== "User" && kind !== "Post" && kind !== "Product")) {
+        return null;
+    }
+    return { kind, id };
+}
 
 export const db = {
     findUsers(): UserRow[] {
@@ -99,7 +152,8 @@ export const db = {
         return users.map((row) => {
             const out: Partial<UserRow> = {};
             for (const col of cols) {
-                out[col] = row[col];
+                // Indexed assign across mixed column types needs a cast under strict TS.
+                (out as Record<UserColumn, UserRow[UserColumn]>)[col] = row[col];
             }
             return out;
         });
@@ -125,9 +179,80 @@ export const db = {
         return posts.find((p) => p.id === id) ?? null;
     },
 
+    findProducts(): ProductRow[] {
+        return [...products];
+    },
+
+    findProductById(id: string): ProductRow | null {
+        return products.find((p) => p.id === id) ?? null;
+    },
+
     findCommentsByPostId(postId: string): CommentRow[] {
         console.log(`[db] findCommentsByPostId(${postId})`);
         return comments.filter((c) => c.postId === postId);
+    },
+
+    /**
+     * Slice 5 — Node interface lookup via global id ("User:1").
+     * Returns the row plus __typename so GraphQL can pick the concrete type.
+     */
+    findNode(
+        globalId: string
+    ):
+        | (UserRow & { __typename: "User" })
+        | (PostRow & { __typename: "Post" })
+        | (ProductRow & { __typename: "Product" })
+        | null {
+        const parsed = parseGlobalId(globalId);
+        if (!parsed) return null;
+
+        if (parsed.kind === "User") {
+            const row = users.find((u) => u.id === parsed.id);
+            return row ? { ...row, __typename: "User" } : null;
+        }
+        if (parsed.kind === "Post") {
+            const row = posts.find((p) => p.id === parsed.id);
+            return row ? { ...row, __typename: "Post" } : null;
+        }
+        const row = products.find((p) => p.id === parsed.id);
+        return row ? { ...row, __typename: "Product" } : null;
+    },
+
+    /**
+     * Slice 5 — search across posts + products (union SearchResult).
+     * Tags each hit with __typename for union resolution.
+     */
+    search(
+        term: string
+    ): Array<
+        | (PostRow & { __typename: "Post" })
+        | (ProductRow & { __typename: "Product" })
+    > {
+        const q = term.trim().toLowerCase();
+        if (!q) return [];
+
+        const matchedPosts = posts
+            .filter(
+                (p) =>
+                    p.title.toLowerCase().includes(q) ||
+                    p.body.toLowerCase().includes(q) ||
+                    p.tags.some((t) => t.toLowerCase().includes(q))
+            )
+            .map((p) => ({ ...p, __typename: "Post" as const }));
+
+        const matchedProducts = products
+            .filter(
+                (p) =>
+                    p.name.toLowerCase().includes(q) ||
+                    p.description.toLowerCase().includes(q) ||
+                    p.tags.some((t) => t.toLowerCase().includes(q))
+            )
+            .map((p) => ({ ...p, __typename: "Product" as const }));
+
+        console.log(
+            `[db] search("${term}") → ${matchedPosts.length} posts, ${matchedProducts.length} products`
+        );
+        return [...matchedPosts, ...matchedProducts];
     },
 
     insertPost(data: {
