@@ -1,11 +1,8 @@
 /**
- * Slice 6 — Context + auth gates
+ * Slice 7 — GraphQLError + extension codes
  *
- * Resolvers receive context as the 3rd argument.
- * Auth rules (practice, not production JWT):
- *   - createPost / addComment: must be logged in (context.user)
- *   - updatePost: owner of the post, or ADMIN
- *   - deletePost: ADMIN only
+ * Auth / input / missing-row failures throw GraphQLError with extensions.code:
+ *   UNAUTHENTICATED | FORBIDDEN | NOT_FOUND | BAD_USER_INPUT
  */
 import type { GraphQLResolveInfo } from "graphql";
 import type { GraphQLContext } from "./context.js";
@@ -16,6 +13,12 @@ import {
   type ProductRow,
   type UserRow,
 } from "./db.js";
+import {
+  badUserInput,
+  forbidden,
+  notFound,
+  unauthenticated,
+} from "./errors.js";
 import { selectedFieldNames } from "./fieldSelection.js";
 
 type CreatePostInput = {
@@ -36,7 +39,7 @@ type WithTypename<T extends string> = { __typename?: T };
 
 function requireUser(ctx: GraphQLContext): UserRow {
   if (!ctx.user) {
-    throw new Error("Unauthorized: send header x-user-id with a valid user id");
+    unauthenticated();
   }
   return ctx.user;
 }
@@ -44,14 +47,22 @@ function requireUser(ctx: GraphQLContext): UserRow {
 function requireAdmin(ctx: GraphQLContext): UserRow {
   const user = requireUser(ctx);
   if (user.role !== "ADMIN") {
-    throw new Error("Forbidden: ADMIN role required");
+    forbidden("ADMIN role required");
   }
   return user;
 }
 
+function assertNonEmpty(value: string, field: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    badUserInput(`${field} must not be empty`, { field });
+  }
+  return trimmed;
+}
+
 export const resolvers = {
   Query: {
-    hello: (): string => "Hello GraphQL — Slice 6 (context + auth)",
+    hello: (): string => "Hello GraphQL — Slice 7 (GraphQLError + codes)",
 
     me: (_: unknown, __: unknown, ctx: GraphQLContext) => ctx.user,
 
@@ -96,9 +107,11 @@ export const resolvers = {
     ) => {
       const user = requireUser(ctx);
       const { input } = args;
+      const title = assertNonEmpty(input.title, "title");
+      const body = assertNonEmpty(input.body, "body");
       return db.insertPost({
-        title: input.title,
-        body: input.body,
+        title,
+        body,
         authorId: user.id,
         tags: input.tags ?? [],
         published: input.published ?? false,
@@ -113,19 +126,38 @@ export const resolvers = {
       const user = requireUser(ctx);
       const existing = db.findPostById(args.id);
       if (!existing) {
-        throw new Error(`Post not found: ${args.id}`);
+        notFound("Post", args.id);
       }
       if (existing.authorId !== user.id && user.role !== "ADMIN") {
-        throw new Error("Forbidden: only the author or an ADMIN can update");
+        forbidden("only the author or an ADMIN can update");
       }
-      const updated = db.updatePost(args.id, {
-        title: args.input.title ?? undefined,
-        body: args.input.body ?? undefined,
-        tags: args.input.tags ?? undefined,
-        published: args.input.published ?? undefined,
-      });
+
+      const patch: {
+        title?: string;
+        body?: string;
+        tags?: string[];
+        published?: boolean;
+      } = {};
+
+      if (args.input.title !== null && args.input.title !== undefined) {
+        patch.title = assertNonEmpty(args.input.title, "title");
+      }
+      if (args.input.body !== null && args.input.body !== undefined) {
+        patch.body = assertNonEmpty(args.input.body, "body");
+      }
+      if (args.input.tags !== null && args.input.tags !== undefined) {
+        patch.tags = args.input.tags;
+      }
+      if (
+        args.input.published !== null &&
+        args.input.published !== undefined
+      ) {
+        patch.published = args.input.published;
+      }
+
+      const updated = db.updatePost(args.id, patch);
       if (!updated) {
-        throw new Error(`Post not found: ${args.id}`);
+        notFound("Post", args.id);
       }
       return updated;
     },
@@ -138,7 +170,7 @@ export const resolvers = {
       requireAdmin(ctx);
       const ok = db.deletePost(args.id);
       if (!ok) {
-        throw new Error(`Post not found: ${args.id}`);
+        notFound("Post", args.id);
       }
       return true;
     },
@@ -149,13 +181,14 @@ export const resolvers = {
       ctx: GraphQLContext
     ) => {
       const user = requireUser(ctx);
+      const text = assertNonEmpty(args.text, "text");
       const row = db.insertComment({
         postId: args.postId,
-        text: args.text,
+        text,
         authorId: user.id,
       });
       if (!row) {
-        throw new Error("Post not found");
+        notFound("Post", args.postId);
       }
       return row;
     },

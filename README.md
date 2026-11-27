@@ -43,6 +43,7 @@ graphql-practice/
 │   ├── src/
 │   │   ├── index.ts          # Apollo bootstrap + context
 │   │   ├── context.ts        # x-user-id → context.user
+│   │   ├── errors.ts         # GraphQLError helpers + codes
 │   │   ├── schema.ts         # loads SDL from disk
 │   │   ├── schema/
 │   │   │   └── schema.graphql
@@ -66,7 +67,7 @@ graphql-practice/
 | 4 | Done | Mutations + Input types (`createPost`, `updatePost`, `deletePost`, `addComment`) |
 | 5 | Done | Enums (`Role`), interface (`Node`), union (`SearchResult`), `search` + inline fragments |
 | 6 | Done | Context + simple auth (`x-user-id` → `context.user`, `me`, mutation gates) |
-| 7 | Planned | `GraphQLError` + extensions |
+| 7 | Done | `GraphQLError` + `extensions.code` (`UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `BAD_USER_INPUT`) |
 | 8 | Planned | Cursor pagination |
 | 9 | Planned | DataLoader (batch + per-request cache) |
 | 10 | Planned | Apollo Client UI |
@@ -182,7 +183,32 @@ mutation DeletePost {
 }
 ```
 
-Auth gates: missing `x-user-id` → Unauthorized. `updatePost` = owner or ADMIN. `deletePost` = ADMIN only (try header `"2"` to see Forbidden).
+Auth gates: missing `x-user-id` → `UNAUTHENTICATED`. `updatePost` = owner or ADMIN. `deletePost` = ADMIN only (try header `"2"` → `FORBIDDEN`). Empty title/body/text → `BAD_USER_INPUT`. Missing post id → `NOT_FOUND`.
+
+**Structured errors (Slice 7)** — clients branch on `errors[].extensions.code`, not the message string:
+
+```graphql
+mutation BadInput {
+  createPost(input: { title: "   ", body: "x" }) {
+    id
+  }
+}
+```
+
+Example response shape:
+
+```json
+{
+  "errors": [
+    {
+      "message": "title must not be empty",
+      "path": ["createPost"],
+      "extensions": { "code": "BAD_USER_INPUT", "field": "title" }
+    }
+  ],
+  "data": null
+}
+```
 
 **Enum + interface + union (Slice 5):**
 
@@ -235,6 +261,7 @@ query SearchMixed {
 - **Look-ahead (draft):** `Query.users` uses `info` to project columns — a sketch of SQL `SELECT` pruning.
 - **Nested resolvers:** relations use `parent` FKs (`authorId`, `postId`); DataLoader comes in Slice 9.
 - **Context auth:** `x-user-id` header → `context.user`; mutations read author from context (Slice 6).
+- **Structured errors:** resolvers throw `GraphQLError` with `extensions.code` so clients can switch on stable codes (Slice 7).
 
 ---
 

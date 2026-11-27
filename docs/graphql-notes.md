@@ -499,7 +499,7 @@ In Apollo Sandbox: **Headers** panel → `{ "x-user-id": "1" }`.
 
 - `Query.me: User` — returns `context.user` (nullable)
 - `CreatePostInput` / `addComment` no longer take `authorId` — author = `context.user.id`
-- Gates in resolvers (plain `Error` for now; Slice 7 upgrades to `GraphQLError` + codes):
+- Gates in resolvers (Slice 7: `GraphQLError` + `extensions.code`):
 
 | Mutation | Rule |
 |----------|------|
@@ -618,7 +618,7 @@ User: {
 
 Same query can return `name` for everyone and hide/forbid `email` for others.
 
-Options: **throw** (GraphQL error on that path) vs **return null** (hide the value). Slice 7 upgrades errors to `GraphQLError` + extension codes.
+Options: **throw** (GraphQL error on that path) vs **return null** (hide the value). Prefer `GraphQLError` + codes (Slice 7).
 
 ### Quick recall
 
@@ -626,6 +626,193 @@ Options: **throw** (GraphQL error on that path) vs **return null** (hide the val
 - AuthN in `createContext`; AuthZ in resolvers (or directives)
 - Not a single REST-style responsibility chain after Apollo starts — edge chain + per-field checks
 - Field resolvers can gate individual pieces of data using `context.user`
+
+---
+
+## Slice 7 — GraphQLError + extensions
+
+### Why not `throw new Error(...)`?
+
+Plain `Error` becomes a GraphQL error, but clients only get a **message string**. Messages change; UIs should branch on a **stable code**.
+
+```ts
+throw new GraphQLError("title must not be empty", {
+  extensions: { code: "BAD_USER_INPUT", field: "title" },
+});
+```
+
+Response shape (HTTP still often `200` — GraphQL puts failures in the body):
+
+```json
+{
+  "errors": [
+    {
+      "message": "title must not be empty",
+      "locations": [{ "line": 2, "column": 3 }],
+      "path": ["createPost"],
+      "extensions": { "code": "BAD_USER_INPUT", "field": "title" }
+    }
+  ],
+  "data": null
+}
+```
+
+| Piece | Meaning |
+|-------|---------|
+| `message` | Human-readable (logging / toast fallback) |
+| `path` | Which field in the operation failed |
+| `extensions.code` | Machine-readable — **switch on this** |
+| `data` | Often `null` for top-level mutation failure; partial data possible on queries |
+
+### Codes in this lab (`server/src/errors.ts`)
+
+| Code | When |
+|------|------|
+| `UNAUTHENTICATED` | Missing / unknown `x-user-id` on a protected mutation |
+| `FORBIDDEN` | Logged in but not allowed (non-ADMIN `deletePost`, non-owner `updatePost`) |
+| `NOT_FOUND` | Post id does not exist |
+| `BAD_USER_INPUT` | Empty `title` / `body` / `text` after trim (Apollo’s built-in code) |
+
+Helpers: `unauthenticated()`, `forbidden()`, `notFound()`, `badUserInput()` — all throw `never` so TypeScript narrows after the call.
+
+### AuthN / AuthZ / validation map to codes
+
+```text
+createContext → user | null          (AuthN — soft)
+requireUser   → UNAUTHENTICATED      (AuthN gate)
+requireAdmin / owner check → FORBIDDEN
+assertNonEmpty → BAD_USER_INPUT
+missing row → NOT_FOUND
+```
+
+Same gates as Slice 6; only the **error shape** upgraded.
+
+### Four most important things about GraphQL errors
+
+#### 1. Switch on `extensions.code`, not the message (client-side)
+
+Server sets the code; **client** decides what to do.
+
+| Part | For whom | Can change? |
+|------|----------|-------------|
+| `message` | humans (toast / logs) | yes |
+| `extensions.code` | programs (`if` / `switch`) | no — keep fixed |
+
+```ts
+// Fragile — breaks if the server rewrites the sentence
+if (error.message === "Unauthorized: send header x-user-id with a valid user id") {
+  goToLogin();
+}
+
+// Stable — code stays the same even when the message changes
+if (error.extensions?.code === "UNAUTHENTICATED") {
+  goToLogin();
+}
+```
+
+Show `message` to the user; branch behavior on `code`.
+
+#### 2. HTTP is often still 200 — failure lives in the body
+
+REST habit: `401` / `403` / `404` on the status line.
+
+GraphQL habit: the operation usually still returns **HTTP 200**, and failures sit in the JSON:
+
+```json
+{
+  "errors": [ { "message": "...", "extensions": { "code": "UNAUTHENTICATED" } } ],
+  "data": null
+}
+```
+
+| | REST | GraphQL |
+|--|------|---------|
+| “Did it fail?” | Check `response.status` | Check `errors` in the body |
+| HTTP status | Often mirrors the error | Often still **200** |
+
+Rule: **status 200 ≠ success.** Open the JSON and look for `errors`.
+
+(Network down, CORS, server crash → real non-200 / failed fetch — those are transport failures, not GraphQL field errors.)
+
+When one request has **several** root fields (aliases like `ok` / `bad`, or many query fields), also read **`path`** to see *which* field failed (`"path": ["bad"]`).
+
+Queries in one document can run in parallel; mutations run **one after another**. Either way, use `path` to map errors to fields.
+
+#### 3. `errors` + `data` can both appear — and `!` can wipe `data`
+
+**Partial success** (nullable field fails, sibling succeeds):
+
+```graphql
+query {
+  me { name }           # ok
+  post(id: "999") { title }  # missing
+}
+```
+
+If `post` is `Post` (nullable), response can be:
+
+```json
+{
+  "data": { "me": { "name": "Sara" }, "post": null },
+  "errors": [ { "path": ["post"], ... } ]
+}
+```
+
+Both `data` and `errors` exist.
+
+**Null bubbling** (`!` = must never be null): if that field fails, GraphQL can’t leave `null` there, so it erases the **parent**, and may erase all of `data`.
+
+Lab example — two aliased mutations, both return `Post!`:
+
+```graphql
+mutation {
+  ok: createPost(input: { title: "Test", body: "Hi", tags: ["te"] }) { id }
+  bad: createPost(input: { title: "   ", body: "x" }) { id }
+}
+```
+
+```text
+ok  → succeeded
+bad → BAD_USER_INPUT, return type Post!
+      can't put null → bubble up → whole data becomes null
+```
+
+You may see only `errors` + `"data": null` even though `ok` already ran.
+
+| Return type | On failure |
+|-------------|------------|
+| `Post` (nullable) | that field → `null`; siblings can stay in `data` |
+| `Post!` (non-null) | error climbs; can wipe **all** of `data` |
+
+#### 4. Mutations are not transactional by default
+
+**Transactional** = all steps commit together, or none keep any change.
+
+GraphQL does **not** do that for multiple root mutation fields. Each field runs; a DB write **stays** even if a later field fails and the response shows `data: null`.
+
+```text
+1. ok: createPost(...)   → insert into DB ✅
+2. bad: createPost(...)  → throws ❌
+3. Response              → data: null (null bubbling)
+```
+
+The response can look like “nothing happened,” but the first post is **already saved**. GraphQL does not roll back step 1.
+
+| What you might think | What actually happened |
+|----------------------|-------------------------|
+| `data: null` → nothing saved | Earlier mutation field already wrote |
+| One mutation document = one transaction | One document = several steps; each can stick |
+
+**Fix for “all or nothing”:** one mutation field for that business action (and a real DB transaction inside the resolver). Don’t split atomic work across several root mutation fields and expect GraphQL to undo the first ones.
+
+### Quick recall
+
+- Prefer `GraphQLError` + `extensions.code` over plain `Error`
+- Client: switch on `code`; show `message`; use `path` for multi-field ops
+- HTTP 200 is normal — look at the JSON `errors` array
+- `errors` + partial `data` possible; `!` failure can null the whole `data`
+- Multi-field mutations are not a transaction — design one atomic mutation when needed
+- Lab codes: `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `BAD_USER_INPUT`
 
 ---
 
