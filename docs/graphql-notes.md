@@ -454,7 +454,178 @@ Flow: `Mutation.createPost` → `db.insertPost` → return row → `Post.author`
 
 Because the return type is `Post!`, the resolver map key **`Post`** must exist and match — same as for `Query.posts`. The mutation does not get its own copy of `author` / `comments`; it reuses `Post`.
 
-`authorId` in the input is temporary; Slice 6 moves “who am I” into context.
+`authorId` in the input was temporary; Slice 6 moved “who am I” into context.
+
+---
+
+## Slice 6 — Context + auth
+
+### Resolver signature (all four args)
+
+```ts
+(parent, args, context, info) => { ... }
+```
+
+| Arg | Role |
+|-----|------|
+| `parent` | Value from the parent resolver (row / list item) |
+| `args` | Field arguments from the query |
+| `context` | **Per-request** shared bag (auth, db, loaders) |
+| `info` | AST / selection metadata (look-ahead) |
+
+### How context is built
+
+Apollo calls your `context` factory **once per HTTP request** in `index.ts`:
+
+```ts
+context: async ({ req }) => createContext(req)
+```
+
+`createContext` reads `x-user-id`, looks up the user in `db`, returns `{ user }`.
+
+Every resolver on that request gets the **same** `context` object — that is how “who am I” reaches `createPost` without putting `authorId` in the mutation args.
+
+### Practice auth (not JWT)
+
+| Header | Effect |
+|--------|--------|
+| none / unknown id | `context.user = null` |
+| `x-user-id: 1` | Kareem (`ADMIN`) |
+| `x-user-id: 2` | Sara (`USER`) |
+
+In Apollo Sandbox: **Headers** panel → `{ "x-user-id": "1" }`.
+
+### Schema changes this slice
+
+- `Query.me: User` — returns `context.user` (nullable)
+- `CreatePostInput` / `addComment` no longer take `authorId` — author = `context.user.id`
+- Gates in resolvers (plain `Error` for now; Slice 7 upgrades to `GraphQLError` + codes):
+
+| Mutation | Rule |
+|----------|------|
+| `createPost`, `addComment` | must be logged in |
+| `updatePost` | author of the post **or** `ADMIN` |
+| `deletePost` | `ADMIN` only |
+
+### Why auth lives in context (not args)
+
+- Client cannot spoof “I am user 1” via `authorId` in the body once authorship comes from a trusted header/session.
+- Same pattern as REST middleware → `req.user`, then handlers read it.
+- Production swap: verify JWT / session cookie inside `createContext`; resolvers stay the same.
+
+### Try it
+
+```graphql
+query { me { id name role } }
+
+mutation {
+  createPost(input: { title: "Auth post", body: "from context" }) {
+    id
+    author { name }
+  }
+}
+```
+
+Without header → Unauthorized. With `x-user-id: 2` then `deletePost` → Forbidden.
+
+### Context is request-scoped (not “per resolver”)
+
+```ts
+context: async ({ req }) => createContext(req)
+```
+
+- Runs **once per HTTP request**, not once per field.
+- That one object is shared by **all** resolvers on that request (`me`, `createPost`, `Post.author`, …).
+- Next request → new context. Same idea as request-scoped DI / Express `req`.
+
+```text
+Request arrives
+  → createContext(req)          // once
+  → Query.me(ctx)
+  → Mutation.createPost(ctx)    // same ctx
+  → Post.author(ctx)            // same ctx
+```
+
+### Authentication vs authorization vs context
+
+| Idea | Question | Where |
+|------|----------|--------|
+| **Context** | Shared per-request bag | `{ user }` passed as 3rd resolver arg |
+| **Authentication** | Who are you? | `createContext` (header / JWT verify → `user`) |
+| **Authorization** | Are you allowed? | Resolvers / helpers (`requireUser`, `requireAdmin`) |
+
+Context is **not** the gate by itself — it’s the identity bag the gates read.
+
+### JWT mental model (production)
+
+1. Client sends `Authorization: Bearer <jwt>`
+2. `createContext` verifies JWT → that’s authentication
+3. Context stores the **result** (`user` / claims); resolvers don’t re-parse the token each time
+4. Resolvers use `context.user` to allow/deny → authorization
+
+**Two failure styles:**
+
+| Style | Behavior |
+|-------|----------|
+| Hard stop in context | Invalid token → throw → whole request dies |
+| Soft pass-through (our lab) | Missing header → `user: null` → request continues; only protected resolvers reject (`me` can return `null`) |
+
+### REST middleware chain vs GraphQL
+
+REST often feels like one pipeline:
+
+```text
+middleware → middleware → guard → controller → response
+```
+
+GraphQL spreads the same ideas across layers (no Nest-style decorator chain by default):
+
+| Nest / REST idea | GraphQL / Apollo place |
+|------------------|-------------------------|
+| Middleware | Express/Fastify middleware, or work inside `createContext` |
+| Auth | `context` factory (JWT / session → `user`) |
+| Guard | Resolver helpers, or schema directives (`@auth`) |
+| Interceptor | Apollo **plugins**, or resolver wrappers |
+
+Shape:
+
+```text
+HTTP middlewares (optional chain)
+  → createContext (once, request-scoped)
+  → GraphQL field tree
+       → resolver + guard helper
+       → resolver + guard helper
+  → plugins around the whole operation
+```
+
+Why not one central guard for the URL? One GraphQL operation can touch **many fields** with **different** rules.
+
+### Field-level authorization
+
+Yes — specific users can access specific **fields**/data, not only whole mutations:
+
+```ts
+User: {
+  email: (parent, _, ctx) => {
+    if (!ctx.user) return null;
+    if (ctx.user.id !== parent.id && ctx.user.role !== "ADMIN") {
+      throw new Error("Forbidden");
+    }
+    return parent.email;
+  },
+}
+```
+
+Same query can return `name` for everyone and hide/forbid `email` for others.
+
+Options: **throw** (GraphQL error on that path) vs **return null** (hide the value). Slice 7 upgrades errors to `GraphQLError` + extension codes.
+
+### Quick recall
+
+- Context = request-scoped bag, built once, shared by all resolvers on that request
+- AuthN in `createContext`; AuthZ in resolvers (or directives)
+- Not a single REST-style responsibility chain after Apollo starts — edge chain + per-field checks
+- Field resolvers can gate individual pieces of data using `context.user`
 
 ---
 
