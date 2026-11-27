@@ -41,7 +41,8 @@ graphql-practice/
 │   └── graphql-notes.md      # concepts: !, Query, look-ahead, N+1, …
 ├── server/
 │   ├── src/
-│   │   ├── index.ts          # Apollo bootstrap
+│   │   ├── index.ts          # Apollo bootstrap + context
+│   │   ├── context.ts        # x-user-id → context.user
 │   │   ├── schema.ts         # loads SDL from disk
 │   │   ├── schema/
 │   │   │   └── schema.graphql
@@ -64,7 +65,7 @@ graphql-practice/
 | 3 | Done | Nested resolvers (`author`, `comments`, `User.posts`) / N+1 visible in logs |
 | 4 | Done | Mutations + Input types (`createPost`, `updatePost`, `deletePost`, `addComment`) |
 | 5 | Done | Enums (`Role`), interface (`Node`), union (`SearchResult`), `search` + inline fragments |
-| 6 | Planned | Context + simple auth (`x-user-id`) |
+| 6 | Done | Context + simple auth (`x-user-id` → `context.user`, `me`, mutation gates) |
 | 7 | Planned | `GraphQLError` + extensions |
 | 8 | Planned | Cursor pagination |
 | 9 | Planned | DataLoader (batch + per-request cache) |
@@ -123,15 +124,28 @@ query {
 }
 ```
 
-**Mutations (Slice 4)** — in Sandbox switch operation to Mutation, or use `mutation { ... }`:
+**Mutations (Slice 4+6)** — set Sandbox **Headers** first:
+
+```json
+{ "x-user-id": "1" }
+```
+
+(`1` = Kareem / ADMIN, `2` = Sara / USER, `3` = Omar / USER)
 
 ```graphql
+query WhoAmI {
+  me {
+    id
+    name
+    role
+  }
+}
+
 mutation CreatePost {
   createPost(
     input: {
       title: "My first mutation"
-      body: "Writes go through db.insertPost"
-      authorId: "1"
+      body: "Author comes from context.user — no authorId in input"
       tags: ["graphql"]
       published: true
     }
@@ -146,7 +160,7 @@ mutation CreatePost {
 }
 
 mutation AddComment {
-  addComment(postId: "1", text: "Nice post!", authorId: "3") {
+  addComment(postId: "1", text: "Nice post!") {
     id
     text
     author {
@@ -156,7 +170,7 @@ mutation AddComment {
 }
 
 mutation UpdatePost {
-  updatePost(id: "5", input: { published: false }) {
+  updatePost(id: "1", input: { published: false }) {
     id
     title
     published
@@ -164,11 +178,11 @@ mutation UpdatePost {
 }
 
 mutation DeletePost {
-  deletePost(id: "5")
+  deletePost(id: "4")
 }
 ```
 
-Note: `authorId` on create/comment is temporary until Slice 6 (auth context).
+Auth gates: missing `x-user-id` → Unauthorized. `updatePost` = owner or ADMIN. `deletePost` = ADMIN only (try header `"2"` to see Forbidden).
 
 **Enum + interface + union (Slice 5):**
 
@@ -220,6 +234,7 @@ query SearchMixed {
 - **Default field resolvers:** scalars resolve from `parent` when names match.
 - **Look-ahead (draft):** `Query.users` uses `info` to project columns — a sketch of SQL `SELECT` pruning.
 - **Nested resolvers:** relations use `parent` FKs (`authorId`, `postId`); DataLoader comes in Slice 9.
+- **Context auth:** `x-user-id` header → `context.user`; mutations read author from context (Slice 6).
 
 ---
 

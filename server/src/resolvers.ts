@@ -1,11 +1,14 @@
 /**
- * Slice 5 — Enums, Interface, Union
+ * Slice 6 — Context + auth gates
  *
- * - Role enum: default resolver reads parent.role (must match enum values)
- * - Node / SearchResult: __resolveType tells GraphQL which concrete type
- * - Inline fragments (... on Post) only work after resolveType succeeds
+ * Resolvers receive context as the 3rd argument.
+ * Auth rules (practice, not production JWT):
+ *   - createPost / addComment: must be logged in (context.user)
+ *   - updatePost: owner of the post, or ADMIN
+ *   - deletePost: ADMIN only
  */
 import type { GraphQLResolveInfo } from "graphql";
+import type { GraphQLContext } from "./context.js";
 import {
   db,
   type CommentRow,
@@ -18,7 +21,6 @@ import { selectedFieldNames } from "./fieldSelection.js";
 type CreatePostInput = {
   title: string;
   body: string;
-  authorId: string;
   tags?: string[] | null;
   published?: boolean | null;
 };
@@ -32,14 +34,31 @@ type UpdatePostInput = {
 
 type WithTypename<T extends string> = { __typename?: T };
 
+function requireUser(ctx: GraphQLContext): UserRow {
+  if (!ctx.user) {
+    throw new Error("Unauthorized: send header x-user-id with a valid user id");
+  }
+  return ctx.user;
+}
+
+function requireAdmin(ctx: GraphQLContext): UserRow {
+  const user = requireUser(ctx);
+  if (user.role !== "ADMIN") {
+    throw new Error("Forbidden: ADMIN role required");
+  }
+  return user;
+}
+
 export const resolvers = {
   Query: {
-    hello: (): string => "Hello GraphQL — Slice 5 (enum / interface / union)",
+    hello: (): string => "Hello GraphQL — Slice 6 (context + auth)",
+
+    me: (_: unknown, __: unknown, ctx: GraphQLContext) => ctx.user,
 
     users: (
       _parent: unknown,
       _args: unknown,
-      _ctx: unknown,
+      _ctx: GraphQLContext,
       info: GraphQLResolveInfo
     ) => {
       const fields = selectedFieldNames(info);
@@ -70,15 +89,17 @@ export const resolvers = {
   },
 
   Mutation: {
-    createPost: (_: unknown, args: { input: CreatePostInput }) => {
+    createPost: (
+      _: unknown,
+      args: { input: CreatePostInput },
+      ctx: GraphQLContext
+    ) => {
+      const user = requireUser(ctx);
       const { input } = args;
-      if (!db.findUserById(input.authorId)) {
-        throw new Error(`User not found: ${input.authorId}`);
-      }
       return db.insertPost({
         title: input.title,
         body: input.body,
-        authorId: input.authorId,
+        authorId: user.id,
         tags: input.tags ?? [],
         published: input.published ?? false,
       });
@@ -86,8 +107,17 @@ export const resolvers = {
 
     updatePost: (
       _: unknown,
-      args: { id: string; input: UpdatePostInput }
+      args: { id: string; input: UpdatePostInput },
+      ctx: GraphQLContext
     ) => {
+      const user = requireUser(ctx);
+      const existing = db.findPostById(args.id);
+      if (!existing) {
+        throw new Error(`Post not found: ${args.id}`);
+      }
+      if (existing.authorId !== user.id && user.role !== "ADMIN") {
+        throw new Error("Forbidden: only the author or an ADMIN can update");
+      }
       const updated = db.updatePost(args.id, {
         title: args.input.title ?? undefined,
         body: args.input.body ?? undefined,
@@ -100,7 +130,12 @@ export const resolvers = {
       return updated;
     },
 
-    deletePost: (_: unknown, args: { id: string }) => {
+    deletePost: (
+      _: unknown,
+      args: { id: string },
+      ctx: GraphQLContext
+    ) => {
+      requireAdmin(ctx);
       const ok = db.deletePost(args.id);
       if (!ok) {
         throw new Error(`Post not found: ${args.id}`);
@@ -110,15 +145,17 @@ export const resolvers = {
 
     addComment: (
       _: unknown,
-      args: { postId: string; text: string; authorId: string }
+      args: { postId: string; text: string },
+      ctx: GraphQLContext
     ) => {
+      const user = requireUser(ctx);
       const row = db.insertComment({
         postId: args.postId,
         text: args.text,
-        authorId: args.authorId,
+        authorId: user.id,
       });
       if (!row) {
-        throw new Error("Post or author not found");
+        throw new Error("Post not found");
       }
       return row;
     },

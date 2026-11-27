@@ -1,5 +1,5 @@
-# Slice 5 — Enums, Interface, Union
-# Enum = fixed allowed values. Interface = shared fields. Union = one-of types (use ... on Type).
+# Slice 6 — Context + simple auth
+# Header x-user-id → context.user. Mutations take author from context (no authorId args).
 
 """Fixed set of roles — client can only send / receive these values."""
 enum Role {
@@ -60,13 +60,11 @@ union SearchResult = Post | Product
 
 """
 INPUT types: write-side payloads.
-Defaults apply when the client omits the field.
-authorId is temporary until Slice 6 (context / auth).
+authorId removed in Slice 6 — author comes from context.user (x-user-id header).
 """
 input CreatePostInput {
   title: String!
   body: String!
-  authorId: ID!
   tags: [String!] = []
   published: Boolean = false
 }
@@ -80,6 +78,9 @@ input UpdatePostInput {
 
 type Query {
   hello: String!
+
+  """Current user from x-user-id header, or null if missing/unknown."""
+  me: User
 
   users: [User!]!
   user(id: ID!): User
@@ -102,8 +103,12 @@ type Query {
 }
 
 type Mutation {
+  """Requires auth. Author = context.user."""
   createPost(input: CreatePostInput!): Post!
+  """Requires auth. Owner of the post, or ADMIN."""
   updatePost(id: ID!, input: UpdatePostInput!): Post!
+  """Requires ADMIN role."""
   deletePost(id: ID!): Boolean!
-  addComment(postId: ID!, text: String!, authorId: ID!): Comment!
+  """Requires auth. Comment author = context.user."""
+  addComment(postId: ID!, text: String!): Comment!
 }
