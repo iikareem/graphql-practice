@@ -63,7 +63,7 @@ graphql-practice/
 | 2 | Done | Object types, args, in-memory DB, look-ahead on `users` |
 | 3 | Done | Nested resolvers (`author`, `comments`, `User.posts`) / N+1 visible in logs |
 | 4 | Done | Mutations + Input types (`createPost`, `updatePost`, `deletePost`, `addComment`) |
-| 5 | Planned | Enums, interfaces, unions |
+| 5 | Done | Enums (`Role`), interface (`Node`), union (`SearchResult`), `search` + inline fragments |
 | 6 | Planned | Context + simple auth (`x-user-id`) |
 | 7 | Planned | `GraphQLError` + extensions |
 | 8 | Planned | Cursor pagination |
@@ -169,6 +169,47 @@ mutation DeletePost {
 ```
 
 Note: `authorId` on create/comment is temporary until Slice 6 (auth context).
+
+**Enum + interface + union (Slice 5):**
+
+```graphql
+query RolesAndNode {
+  users {
+    name
+    role
+  }
+  node(id: "User:1") {
+    id
+    ... on User {
+      email
+      role
+    }
+  }
+  node(id: "Product:2") {
+    ... on Product {
+      name
+      price
+    }
+  }
+}
+
+query SearchMixed {
+  search(term: "graphql") {
+    ... on Post {
+      id
+      title
+      tags
+    }
+    ... on Product {
+      id
+      name
+      price
+    }
+  }
+}
+```
+
+`node` needs a **global id** (`User:1`, `Post:2`, `Product:1`) because local table ids collide. `search` returns a mix — without `... on Post` / `... on Product` you cannot ask for type-specific fields.
 
 ---
 

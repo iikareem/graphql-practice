@@ -5,6 +5,129 @@ Sandbox: `http://localhost:4000` after `npm run server`.
 
 ---
 
+## Slice 5 — Enum / Interface / Union (GraphQL, not TS)
+
+These live in the **schema**. TypeScript only implements resolvers (`__resolveType`, `search`, etc.).
+
+| Tool | Job | In this lab |
+|------|-----|-------------|
+| **Enum** | Fixed allowed values | `enum Role { USER ADMIN }` on `User.role` |
+| **Interface** | Shared fields; many types implement them | `interface Node { id }` — `User`, `Post`, `Product` |
+| **Union** | Field returns *one of* several types (no shared fields required) | `union SearchResult = Post \| Product` |
+
+**`implements` vs `extend` (different jobs):**
+
+| Keyword | Meaning |
+|---------|---------|
+| `implements` | This type **is a** Node (must have the interface fields) |
+| `extend` | **Add more fields** to a type already defined (split schema across files) |
+
+GraphQL has **no** OOP-style `extends` for object inheritance. Shared shape → interface + `implements`. One-of → union.
+
+**Why inline fragments?** A union/interface result is polymorphic. GraphQL only lets you ask for fields that exist on the concrete type:
+
+```graphql
+search(term: "graphql") {
+  __typename
+  ... on Post { title }
+  ... on Product { price }
+}
+```
+
+### Names in GraphQL
+
+| Term | Meaning |
+|------|---------|
+| **Abstract type** | `union` or `interface` |
+| **Concrete type** | `Post`, `Product`, `User`, … |
+| **Type resolver / `__resolveType`** | Picks the concrete type for each value |
+| **Inline fragment** | `... on Post { ... }` |
+| **Abstract type resolution** | The whole “figure out which type, then resolve its fields” step |
+
+### How `search` connects to `SearchResult`
+
+Same pattern as `posts` → `Post`. You do **not** call `SearchResult` from `search`. The **schema return type** wires them:
+
+```graphql
+search(term: String!): [SearchResult!]!
+```
+
+```ts
+Query: {
+  search: (_, args) => db.search(args.term),  // returns a list of objects
+},
+SearchResult: {
+  __resolveType(obj) { ... },  // GraphQL runs this because return type is SearchResult
+},
+```
+
+**Execution phases for a union field:**
+
+```text
+1. Query.search runs once → returns [row, row, …]
+2. For each item → SearchResult.__resolveType → "Post" or "Product"
+3. Then resolve that concrete type’s selected fields (... on Post / ... on Product)
+```
+
+Return type says “polymorphic.” `__resolveType` says “which one.” Then normal field resolvers run.
+
+### `__typename` — server vs client
+
+| Where | Job |
+|-------|-----|
+| **Server (internal)** | Tag / hint so `__resolveType` can return `"Post"` or `"Product"`. Happens even if the client never asks for `__typename`. |
+| **Client (response)** | Only appears in JSON if the query selects it (or Apollo Client adds it). Used for UI branching + cache (`__typename` + `id`). |
+
+So: server uses it to **resolve**; client uses it to **read/cache**. Same name, two stages.
+
+### Why a wrong `__typename` can still “work”
+
+We tried tagging posts as `__typename: "tt"` and search still worked.
+
+`SearchResult.__resolveType` only trusts `__typename` when it is a **real** schema name (`"Post"` / `"Product"`). `"tt"` fails that check → **fallback to shape** (`title` → Post, `price` → Product).
+
+That fallback is a learning safety net. In production prefer a correct `__typename` (or a clear discriminator); guessing from fields can collide.
+
+**Global ids for `node`:** tables reuse `"1"`, `"2"`, … so `node(id: "1")` is ambiguous. Use `"User:1"`, `"Post:2"`, `"Product:1"`.
+
+---
+
+## What we locked in (`posts` / `Post` / mutations)
+
+Plain version of the recent questions:
+
+1. **Resolver names must match the schema** so GraphQL can find them.  
+   - Schema has `type Query { posts ... }` and `type Post { author ... }`  
+   - Code must have `Query.posts` and `Post.author` — same spelling.
+
+2. **`posts` and `Post` are both real, and both need resolvers (different jobs).**  
+   - `Query.posts` → get the list (runs **once**)  
+   - `Post` → for each item, resolve selected fields like `author` / `comments`
+
+3. **Execution order:**  
+   run `posts` first → then for **each** returned post, go to `Post` field resolvers.
+
+4. **Mutations reuse the same `Post` resolvers.**  
+   - `createPost(...): Post!` means “this returns a Post”  
+   - After create, if the client selects `author`, GraphQL runs `Post.author` — same map as after `Query.posts`  
+   - One `Post: { author, comments }` serves queries **and** mutations
+
+```text
+Query.posts  ──once──► [post, post, …]
+                              │
+              for each post ──┤
+                              ▼
+                         Post.author
+                         Post.comments
+                         (only if selected)
+
+Mutation.createPost ──► one post ──► same Post.* resolvers
+```
+
+Details below in the matching sections.
+
+---
+
 ## Schema is written in SDL
 
 Real GraphQL types look like this:
@@ -328,6 +451,8 @@ mutation {
 ```
 
 Flow: `Mutation.createPost` → `db.insertPost` → return row → `Post.author` runs if selected.
+
+Because the return type is `Post!`, the resolver map key **`Post`** must exist and match — same as for `Query.posts`. The mutation does not get its own copy of `author` / `comments`; it reuses `Post`.
 
 `authorId` in the input is temporary; Slice 6 moves “who am I” into context.
 
